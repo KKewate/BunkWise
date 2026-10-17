@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BunkWise - Smart Attendance Calculator</title>
+  <style>
+    :root { --bg:#f6f7fb; --card:#fff; --ink:#1d2433; --muted:#6b7385; --line:#e3e6ef;
+            --safe:#1f9d63; --warn:#d98a00; --danger:#d33a3a; --accent:#4458e8; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+           background:var(--bg); color:var(--ink); }
+    header { padding:28px 16px 8px; text-align:center; }
+    header h1 { margin:0; font-size:1.9rem; }
+    header p { margin:6px 0 0; color:var(--muted); }
+    main { max-width:760px; margin:0 auto; padding:16px; }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:14px;
+            padding:18px; margin-bottom:16px; }
+    .row { display:grid; grid-template-columns: 2fr 1fr 1fr auto; gap:8px; margin-bottom:8px; }
+    input { padding:10px; border:1px solid var(--line); border-radius:8px; font-size:1rem; width:100%; }
+    button { padding:10px 14px; border:0; border-radius:8px; background:var(--accent);
+             color:#fff; font-size:1rem; cursor:pointer; }
+    button.ghost { background:transparent; color:var(--accent); border:1px solid var(--accent); }
+    button.x { background:#eee; color:#555; padding:10px; }
+    .target { display:flex; align-items:center; gap:8px; margin-bottom:12px; }
+    .target input { width:90px; }
+    .actions { display:flex; gap:8px; margin-top:8px; flex-wrap:wrap; }
+    .result { border-left:6px solid var(--line); }
+    .result.safe { border-left-color:var(--safe); }
+    .result.warning { border-left-color:var(--warn); }
+    .result.danger { border-left-color:var(--danger); }
+    .pct { font-size:1.6rem; font-weight:700; }
+    .msg { margin-top:4px; color:var(--muted); }
+    .bar { height:8px; background:var(--line); border-radius:99px; margin-top:8px; overflow:hidden; }
+    .bar > span { display:block; height:100%; background:var(--accent); }
+    .error { color:var(--danger); margin-top:8px; }
+    @media (max-width:560px) { .row { grid-template-columns:1fr 1fr; } .row input:first-child { grid-column:1/-1; } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>BunkWise</h1>
+    <p>Know exactly how many lectures you can skip - and how many you must attend.</p>
+  </header>
+  <main>
+    <section class="card">
+      <div class="target">
+        <label for="target">Required attendance %</label>
+        <input id="target" type="number" min="1" max="100" value="75">
+      </div>
+      <div id="rows"></div>
+      <div class="actions">
+        <button class="ghost" id="add">+ Add subject</button>
+        <button id="calc">Calculate</button>
+      </div>
+      <div class="error" id="error"></div>
+    </section>
+    <section id="results"></section>
+  </main>
+
+  <script>
+    const rows = document.getElementById('rows');
+    const results = document.getElementById('results');
+    const errorBox = document.getElementById('error');
+
+    function addRow(name, attended, total) {
+      const div = document.createElement('div');
+      div.className = 'row';
+      div.innerHTML =
+        '<input class="n" placeholder="Subject" value="' + (name || '') + '">' +
+        '<input class="a" type="number" min="0" placeholder="Attended" value="' + (attended ?? '') + '">' +
+        '<input class="t" type="number" min="0" placeholder="Total" value="' + (total ?? '') + '">' +
+        '<button class="x" title="Remove">x</button>';
+      div.querySelector('.x').onclick = () => div.remove();
+      rows.appendChild(div);
+    }
+
+    function message(r) {
+      if (r.status === 'no-data') return 'No lectures recorded yet.';
+      if (r.status === 'danger') {
+        return r.mustAttend === null
+          ? 'Target cannot be reached after a missed lecture.'
+          : 'Attend the next ' + r.mustAttend + ' lectures in a row to reach the target.';
+      }
+      if (r.canBunk === 0) return 'Right on the edge - do not miss the next lecture!';
+      return 'You can safely skip ' + r.canBunk + ' more lecture' + (r.canBunk === 1 ? '' : 's') + '.';
+    }
+
+    function render(list, overall) {
+      results.innerHTML = '';
+      list.concat(overall ? [{ name: 'Overall', ...overall }] : []).forEach(function (r) {
+        const el = document.createElement('div');
+        el.className = 'card result ' + r.status;
+        el.innerHTML = '<strong></strong><div class="pct"></div><div class="msg"></div>' +
+          '<div class="bar"><span></span></div>';
+        el.querySelector('strong').textContent = r.name + ' (' + r.attended + '/' + r.total + ')';
+        el.querySelector('.pct').textContent = r.percentage + '%';
+        el.querySelector('.msg').textContent = message(r);
+        el.querySelector('.bar span').style.width = Math.min(100, r.percentage) + '%';
+        results.appendChild(el);
+      });
+    }
+
+    document.getElementById('add').onclick = function () { addRow(); };
+    document.getElementById('calc').onclick = async function () {
+      errorBox.textContent = '';
+      const subjects = Array.from(rows.children).map(function (r) {
+        return { name: r.querySelector('.n').value || 'Subject',
+                 attended: r.querySelector('.a').value,
+                 total: r.querySelector('.t').value };
+      });
+      const target = Number(document.getElementById('target').value);
+      try {
+        const res = await fetch('/api/summary', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ subjects: subjects, target: target })
+        });
+        const data = await res.json();
+        if (!res.ok) { errorBox.textContent = data.error; return; }
+        render(data.subjects, data.subjects.length > 1 ? data.overall : null);
+      } catch (e) {
+        errorBox.textContent = 'Could not reach the server.';
+      }
+    };
+
+    addRow('Maths', 30, 40);
+    addRow('Physics', 20, 30);
+  </script>
+</body>
+</html>
